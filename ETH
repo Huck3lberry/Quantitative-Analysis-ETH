@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Jul 12 12:10:15 2020
+
+@author: kiril
+"""
+
+import pandas as pd 
+import matplotlib.pyplot as plt 
+import numpy as np
+
+df = pd.read_csv('price-usd.csv')
+
+df.info()
+
+df.index = pd.to_datetime(df.timestamp, unit='s')
+
+
+del df['timestamp']
+#df.timestamp = pd.to_datetime(df.timestamp, unit='s')
+
+x = df['c']
+
+# Task 1
+# Visual insepction of the price series 
+# Plot the closing price series 
+def chart(df):
+    
+    plt.title('ETH Close Price Series')
+    plt.ylabel('ETH Price')
+    plt.xlabel('Timestamp')
+    plt.plot(df.index, df.iloc[:,0], color = 'b')
+    plt.show()
+    
+    
+chart(df) 
+# Formal Statistical test - Augmented Dickey Fuller test 
+from statsmodels.tsa.stattools import adfuller
+
+x = df['c'].dropna().values
+
+def adf(data):
+    
+    res = adfuller(data)
+    
+    print('ADF Statistic: %f' % res[0])
+    print('p-value: %f' % res[1])
+    print('Critical Values:')
+    
+    for key,value in res[4].items():
+        print('\t%s: %.3f' % (key,value))
+
+
+adf(x)
+
+# Task 2    
+# Create stationary time-series 
+def log_returns(df1):
+    
+    df1['c1'] = df1['c'].shift(-1)
+    df1['log_r'] = np.log(df1['c1'] / df['c'])
+    
+    df1 = df1[['c','c1','log_r']]
+    
+    return df1
+
+
+log_ret = log_returns(df)
+
+# Task 3 
+x = log_ret['log_r'].dropna().values
+
+adf(x)
+
+# Task 4
+def autocorrs(data,col, granularity, lags):
+    '''Resamples the data and plots the auto and partial correlations '''
+    
+    from statsmodels.graphics.tsaplots import plot_pacf, plot_acf
+    
+    if granularity != 'H':
+        
+        data = data.resample(granularity).mean()
+        
+    plot_acf(data[col].dropna(), lags=10)
+    
+    plot_pacf(data[col].dropna(), lags=10)
+
+
+autocorrs(log_ret, 'log_r', 'H', 10)
+
+autocorrs(log_ret,'log_r', 'D',10)
+
+autocorrs(log_ret,'log_r', 'W',10)
+
+autocorrs(log_ret,'log_r', 'M',10)
+
+
+
+# Task 5 
+from scipy import stats
+import statsmodels.api as sm
+
+#fig = sm.qqplot(log_ret['log_r'])
+
+x = log_ret['log_r'].dropna().values
+jb = stats.jarque_bera(x)
+print('P-value is ' + str(jb[1]))
+
+log_ret['log_r'].plot(kind='hist', bins=25)
+
+del x,jb
+
+# =============================================================================
+# Part 2 
+# =============================================================================
+
+# Task1
+
+def charts(rets):
+    
+    data = rets.dropna()
+    
+# Turn the Hourly data into Daily data to visualise better the data   
+    data = data.resample('D').mean()
+    
+    ema20 = data.ewm(span=20, adjust=False).mean()
+    ema20.columns= ['EMA20']
+    ema40 = data.ewm(span=40, adjust=True).mean()
+    ema40.columns = ['EMA40']
+    
+    plt.style.use('ggplot')
+    plt.rcParams.update({'font.size': 15})
+    plt.rcParams["figure.figsize"] = (13,15)
+    plt.title('ETH Close Price Series with EMA 20/40')
+    plt.xlabel('Date')
+    plt.ylabel('$ Price')
+    plt.plot(data.index, data, label='Close Price Series', color='g')
+    plt.plot(data.index, ema20, label='EMA 20', color='b')
+    plt.plot(data.index, ema40, label='EMA 40', color='r')
+    plt.legend()
+    plt.show()
+    
+    return (data, ema20, ema40)
+
+
+charts(log_ret[['c']])
+
+# Task 2
+
+data = log_ret['c'].dropna().to_frame()
+ema20 = data.ewm(span=20, adjust=False).mean()
+ema20.columns= ['EMA20']
+ema40 = data.ewm(span=40, adjust=True).mean()
+ema40.columns = ['EMA40']
+    
+data = data.merge(ema20, left_index=True, right_index=True)
+data = data.merge(ema40, left_index=True, right_index=True)
+
+data['signal'] = (data['EMA20'] > data['EMA40']) & (data['EMA20'] < data['c']) 
+
+# Task 3 
+# Calculates the total number of buy signals 
+buy_signals = data[data['signal'] == True].shape[0]
+print('Total number of BUY signals is ' + str(buy_signals))
+
+# Task 4
+data['lag'] = data['signal'].shift(1)
+data['entry_points'] = (data['signal'] == True) & (data['lag'] == False)
+
+# a) Calculates the number of trades 
+n_trades = data[ data['entry_points'] == True].shape[0]
+print('Total number of trades is ' + str(n_trades))
+
+# b) Obtain the cumulative/ average return of the strategy 
+ret = data[data['signal'] == True]
+ret = ret[['c']].diff()
+ret.columns = ['r']
+
+cum_ret = ret.sum()[0]
+
+print('The cumulative return of the strategy is ' + str(cum_ret))
+
+avg_ret = ret.mean()[0]
+
+print('The average return of the strategy is ' + str(avg_ret))
+
+# c) Calculate drawdown
+
+#A drawdown at a given time t is defined as the difference between
+#the current equity value (assuming no redemption or cash infusion)
+#of the portfolio and the global maximum of the equity curve occur-
+#ring on or before time t.
+
+
+data['r'] = np.log(data['c']).diff()
+data['equity'] = data['signal'].astype(int) * data['r']
+
+window = 252 * 24
+
+roll_max = data.r.rolling(window, min_periods = 1).max()
+h_drawdown = data.r /roll_max - 1
+
+
+max_hourly_drawdown = h_drawdown.rolling(window, min_periods=1).min()
+
+h_drawdown.plot(label = 'MDD')
+max_hourly_drawdown.plot(label = 'Max Hourly Drawdown')
+plt.title('Maximum Drawdown')
+plt.legend()
+plt.show()
+
+
+# Calculate the sharpe ratio = (E(r) - rf)/std*sqrt(252) - annualized for hourly data 
+# assuming a risk free rate of 0% (current federal funds rate = 0%)
+
+r = data[data['signal'] == True]
+r = r['c'].diff()
+
+sharpe = r.mean() / r.std()*np.sqrt(252*24)
+print('Sharpe ratio = ' + str(sharpe))
+
+
+
+
